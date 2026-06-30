@@ -26,7 +26,9 @@
 |-----------|---------|
 | Navbar | Navigation with today's count + Quick Appointment button |
 | Logo | Animated logo (hides on scroll) |
-| ToothDiagram | FDI tooth map (corrected Q1↔Q2, Q3↔Q4) |
+| ToothDiagram | FDI tooth map wrapper (uses SVG charts internally) |
+| AdultDentalChart | SVG interactive 32-tooth chart (permanent, FDI 11-48) |
+| ChildDentalChart | SVG interactive 20-tooth chart (primary, FDI 51-85) |
 | NewPatientModal | Create new patient |
 | AppointmentModal | Quick appointment booking (floating) |
 | ConfirmDialog | Delete/cancel confirmation |
@@ -88,6 +90,14 @@
 
 ### Expense
 - `id?`, `description`, `amount`, `currency`, `date`, `category`, `createdAt`
+
+## Recent Changes (v2.1)
+
+### 5. SVG-Based Interactive Dental Charts
+- **`AdultDentalChart.tsx`**: New SVG component rendering 32 permanent teeth (FDI 11-18, 21-28, 31-38, 41-48) in a U-shaped arch. Each tooth is a clickable SVG `<path>` with distinct shapes for incisors, canines, premolars, and molars. Supports `onToothSelect`, `onHover`, `selectedTooth`, and color/stroke overrides.
+- **`ChildDentalChart.tsx`**: New SVG component for 20 primary teeth (FDI 51-55, 61-65, 71-75, 81-85). Same interactive features as adult chart.
+- **`ToothDiagram.tsx`**: Refactored to delegate rendering to `AdultDentalChart`/`ChildDentalChart` via new `isChild` prop, while preserving all existing note-editing and color-legend behavior.
+- **`PatientFile.tsx`**: Added "طفل" checkbox in the tooth diagram section header to toggle between child/adult chart.
 
 ## Database Version History
 - v1: Initial - patients + deletedIds

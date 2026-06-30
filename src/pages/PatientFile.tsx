@@ -33,6 +33,7 @@ export default function PatientFile({ patientId }: PatientFileProps) {
   const { setActivePatient } = useClinic();
 
   // حقول قابلة للتعديل
+  const [isChild,         setIsChild]         = useState(false);
   const [name,            setName]            = useState("");
   const [gender,          setGender]          = useState<"male" | "female">("male");
   const [birthDate,       setBirthDate]       = useState("");
@@ -338,11 +339,21 @@ export default function PatientFile({ patientId }: PatientFileProps) {
               مخطط الأسنان
               <span className="text-xs font-normal text-sky-500">(انقر على سن لإضافة ملاحظة)</span>
             </h3>
+            <label className="flex items-center gap-1.5 text-xs text-sky-600 cursor-pointer select-none mr-auto">
+              <input
+                type="checkbox"
+                checked={isChild}
+                onChange={(e) => setIsChild(e.target.checked)}
+                className="rounded border-sky-300 text-sky-500 focus:ring-sky-400"
+              />
+              طفل
+            </label>
           </div>
           <ToothDiagram
             treatedTeeth={treatedTeeth}
             toothNotes={toothNotes}
             onNotesChange={handleToothNotesChange}
+            isChild={isChild}
           />
         </div>
 
