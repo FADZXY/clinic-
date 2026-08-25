@@ -414,7 +414,7 @@ ${filteredExpenses.length > 0 ? `<h2>المصاريف (${filteredExpenses.length
             <div className="flex items-center justify-between mb-4">
               <p className="text-sm text-gray-500 font-medium">
                 {filteredExpenses.length>0
-                  ? `${filteredExpenses.length} مصروف • ${totalExpenses.toLocaleString("en-US")} ل.س`
+                  ? `${filteredExpenses.length} مصروف • ${totalExpensesSYP.toLocaleString("en-US")} ل.س`
                   : "لا توجد مصاريف في هذه الفترة"}
               </p>
               <button onClick={showForm ? cancelForm : openAddForm}
