@@ -1,6 +1,6 @@
 // ============================================================
 // صفحة تسجيل الدخول
-// بيانات الدخول: admin / كلمة المرور المحفوظة (افتراضي: 12345)
+// بيانات الدخول: admin / كلمة المرور المحفوظة (افتراضي: *******)
 // ============================================================
 import { useState } from "react";
 import { useLocation } from "wouter";
@@ -18,7 +18,7 @@ export default function Login() {
     setError("");
 
     setTimeout(() => {
-      const savedPassword = localStorage.getItem("clinicPassword") || "12345";
+      const savedPassword = localStorage.getItem("clinicPassword") || "*******";
       if (username === "admin" && password === savedPassword) {
         localStorage.setItem("isLoggedIn", "true");
         setLocation("/dashboard");

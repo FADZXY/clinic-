@@ -68,7 +68,7 @@ export default function Admin() {
     e.preventDefault();
     setPwdLoading(true);
 
-    const saved = localStorage.getItem("clinicPassword") || "12345";
+    const saved = localStorage.getItem("clinicPassword") || "*******";
 
     if (currentPwd !== saved) {
       showToast("كلمة المرور الحالية غير صحيحة", "error");
@@ -211,7 +211,7 @@ export default function Admin() {
             </div>
             <div className="flex-1">
               <h3 className="font-bold text-gray-800 mb-1">تغيير كلمة المرور</h3>
-              <p className="text-sm text-gray-500 mb-4">تغيير كلمة مرور الدخول. كلمة المرور الافتراضية هي 12345.</p>
+              <p className="text-sm text-gray-500 mb-4">تغيير كلمة مرور الدخول. كلمة المرور الافتراضية هي *******.</p>
 
               <form onSubmit={handleChangePassword} className="space-y-3">
                 <div>
