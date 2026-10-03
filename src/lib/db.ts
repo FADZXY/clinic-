@@ -1,3 +1,5 @@
+import { log } from "./logger";
+
 // ============================================================
 // قاعدة البيانات المحلية - IndexedDB
 // تخزين جميع بيانات المرضى والمواعيد محلياً بدون إنترنت
@@ -13,6 +15,27 @@ export interface TreatmentRow {
   currency?: "USD" | "SYP"; // العملة: دولار أمريكي أو ليرة سورية
 }
 
+export interface PaymentTransaction {
+  id: string;
+  amount: number;
+  discount: number;
+  currency: "USD" | "SYP";
+  date: string;
+  method: "direct" | "sham_cash" | "unknown";
+}
+
+export interface CurrencyAmounts {
+  usd: number;
+  syp: number;
+}
+
+export interface PatientFinancials {
+  treatment: CurrencyAmounts;
+  paid: CurrencyAmounts;
+  discount: CurrencyAmounts;
+  remaining: CurrencyAmounts;
+}
+
 export interface Patient {
   id: number;
   name: string;
@@ -26,6 +49,7 @@ export interface Patient {
   notes?: string;
   createdAt: string;
   treatments: TreatmentRow[];
+  payments?: PaymentTransaction[];
   toothNotes?: Record<string, string>; // ملاحظات الأسنان - نظام FDI (مثل "11", "36")
   dataFormatVersion?: number; // إصدار تنسيق البيانات (للترحيل)
 }
@@ -290,7 +314,8 @@ export async function deleteExpense(id: number): Promise<void> {
 // ترحيل بيانات الأسنان (FDI Quadrant Swap)
 // ============================================================
 
-export const DATA_FORMAT_VERSION = 2;
+export const DATA_FORMAT_VERSION = 3;
+const FDI_DATA_FORMAT_VERSION = 2;
 const DATA_VERSION_KEY = "dataFormatVersion";
 
 export function checkDataVersion(): number {
@@ -362,17 +387,65 @@ export async function migratePatientToothNumbers(): Promise<number> {
     }
   }
 
-  setDataVersion(DATA_FORMAT_VERSION);
+  setDataVersion(FDI_DATA_FORMAT_VERSION);
+  return migratedCount;
+}
+
+function legacyPaymentDate(date: string): string {
+  const parts = date.split("/");
+  if (parts.length !== 3) return "";
+  const [day, month, year] = parts;
+  if (!day || !month || !year) return "";
+  return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+}
+
+async function migrateLegacyPayments(): Promise<number> {
+  const patients = await getAllPatients();
+  let migratedCount = 0;
+
+  for (const patient of patients) {
+    if (patient.payments !== undefined) continue;
+    const payments = (patient.treatments || []).flatMap((row, index) => {
+      const amount = parseAmount(row.paidAmount);
+      if (amount <= 0) return [];
+      return [{
+        id: `legacy-${patient.id}-${index}`,
+        amount,
+        discount: 0,
+        currency: row.currency === "USD" ? "USD" as const : "SYP" as const,
+        date: legacyPaymentDate(row.date || ""),
+        method: "unknown" as const,
+      }];
+    });
+    const treatments = (patient.treatments || []).map((row) => ({
+      ...row,
+      paidAmount: "",
+      remainingAmount: "",
+    }));
+    await savePatient({ ...patient, treatments, payments });
+    migratedCount++;
+  }
+
   return migratedCount;
 }
 
 // التحقق من وجود ترحيل معلّق وتنفيذه
 export async function ensureDataMigration(): Promise<boolean> {
-  const currentVersion = checkDataVersion();
+  let currentVersion = checkDataVersion();
   if (currentVersion >= DATA_FORMAT_VERSION) return false;
-  const count = await migratePatientToothNumbers();
-  console.log(`[Migration] تم ترحيل ${count} مريض إلى الإصدار ${DATA_FORMAT_VERSION}`);
-  return count > 0;
+
+  let migratedCount = 0;
+  if (currentVersion < FDI_DATA_FORMAT_VERSION) {
+    migratedCount += await migratePatientToothNumbers();
+    currentVersion = FDI_DATA_FORMAT_VERSION;
+  }
+  if (currentVersion < DATA_FORMAT_VERSION) {
+    migratedCount += await migrateLegacyPayments();
+    setDataVersion(DATA_FORMAT_VERSION);
+  }
+
+  log("info", `تم ترحيل ${migratedCount} سجل إلى الإصدار ${DATA_FORMAT_VERSION}`);
+  return migratedCount > 0;
 }
 
 // ============================================================
@@ -423,7 +496,27 @@ export async function importData(jsonString: string): Promise<ImportResult> {
       continue;
     }
 
-    await savePatient(patient);
+    let patientToSave = patient;
+    if (patient.payments === undefined) {
+      const payments = (patient.treatments || []).flatMap((row, index) => {
+        const amount = parseAmount(row.paidAmount);
+        if (amount <= 0) return [];
+        return [{
+          id: `legacy-${patient.id}-${index}`,
+          amount,
+          discount: 0,
+          currency: row.currency === "USD" ? "USD" as const : "SYP" as const,
+          date: legacyPaymentDate(row.date || ""),
+          method: "unknown" as const,
+        }];
+      });
+      patientToSave = {
+        ...patient,
+        treatments: (patient.treatments || []).map((row) => ({ ...row, paidAmount: "", remainingAmount: "" })),
+        payments,
+      };
+    }
+    await savePatient(patientToSave);
     result.imported++;
   }
 
@@ -445,6 +538,34 @@ export function parseAmount(value: string): number {
     .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 1632))
     .replace(/[،٬,]/g, "");
   return parseFloat(normalized) || 0;
+}
+
+export function calculatePatientFinancials(
+  treatments: TreatmentRow[],
+  payments: PaymentTransaction[] = [],
+): PatientFinancials {
+  const treatment = { usd: 0, syp: 0 };
+  const paid = { usd: 0, syp: 0 };
+  const discount = { usd: 0, syp: 0 };
+
+  for (const row of treatments) {
+    treatment[row.currency === "USD" ? "usd" : "syp"] += parseAmount(row.treatmentAmount);
+  }
+  for (const payment of payments) {
+    const currency = payment.currency === "USD" ? "usd" : "syp";
+    paid[currency] += payment.amount;
+    discount[currency] += payment.discount;
+  }
+
+  return {
+    treatment,
+    paid,
+    discount,
+    remaining: {
+      usd: treatment.usd - paid.usd - discount.usd,
+      syp: treatment.syp - paid.syp - discount.syp,
+    },
+  };
 }
 
 export function createEmptyTreatmentRows(count = 10): TreatmentRow[] {

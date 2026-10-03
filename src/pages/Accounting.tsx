@@ -7,8 +7,9 @@ import { ToastContainer, showToast } from "../components/Toast";
 import { useAutoSave } from "../hooks/use-auto-save";
 import {
   getAllPatients, getAllExpenses, saveExpense, deleteExpense,
-  parseAmount, formatId, formatDateAr, todayISO, Expense,
+  calculatePatientFinancials, parseAmount, formatId, formatDateAr, todayISO, Expense,
 } from "../lib/db";
+import { useLocation } from "wouter";
 
 const CATEGORIES = ["رواتب", "إيجار", "مستلزمات", "فواتير", "صيانة", "أخرى"];
 const CAT_COLORS: Record<string, string> = {
@@ -21,10 +22,11 @@ interface FilteredPayment {
   patientId: number; patientName: string;
   paymentCount: number;
   totalPaidUSD: number; totalPaidSYP: number;
-  totalTreatmentUSD: number; totalTreatmentSYP: number;
+  shamCashUSD: number; shamCashSYP: number;
 }
 
 export default function Accounting() {
+  const [, navigate] = useLocation();
   const todayStr  = todayISO();
   const todayDate = new Date(todayStr);
 
@@ -94,24 +96,21 @@ export default function Accounting() {
   const dateResults = useMemo<FilteredPayment[]>(() => {
     const out: FilteredPayment[] = [];
     for (const patient of patients) {
-      let cnt = 0, paidUSD = 0, paidSYP = 0, treatUSD = 0, treatSYP = 0;
-      for (const row of patient.treatments) {
-        if (!row.date || !row.paidAmount) continue;
-        const p = parseAmount(row.paidAmount); if (p === 0) continue;
-        const parts = row.date.split("/"); if (parts.length !== 3) continue;
-        const [d, m, y] = parts.map(Number); if (isNaN(d) || isNaN(m) || isNaN(y)) continue;
-        if (y !== year) continue;
-        if (month !== "" && m !== Number(month)) continue;
-        if (day !== "" && month !== "" && d !== Number(day)) continue;
-        cnt++;
-        const treat = parseAmount(row.treatmentAmount);
-        if (row.currency === "USD") { paidUSD += p; treatUSD += treat; }
-        else { paidSYP += p; treatSYP += treat; }
+      let count = 0, paidUSD = 0, paidSYP = 0, shamCashUSD = 0, shamCashSYP = 0;
+      for (const payment of patient.payments || []) {
+        if (!payment.date || !matchesDate(payment.date) || payment.amount <= 0) continue;
+        count++;
+        if (payment.currency === "USD") {
+          paidUSD += payment.amount;
+          if (payment.method === "sham_cash") shamCashUSD += payment.amount;
+        } else {
+          paidSYP += payment.amount;
+          if (payment.method === "sham_cash") shamCashSYP += payment.amount;
+        }
       }
-      if (cnt > 0) out.push({ patientId: patient.id, patientName: patient.name, paymentCount: cnt, totalPaidUSD: paidUSD, totalPaidSYP: paidSYP, totalTreatmentUSD: treatUSD, totalTreatmentSYP: treatSYP });
+      if (count > 0) out.push({ patientId: patient.id, patientName: patient.name, paymentCount: count, totalPaidUSD: paidUSD, totalPaidSYP: paidSYP, shamCashUSD, shamCashSYP });
     }
     return out.sort((a, b) => (b.totalPaidUSD + b.totalPaidSYP) - (a.totalPaidUSD + a.totalPaidSYP));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [patients, year, month, day]);
 
   const incomeResults = useMemo<FilteredPayment[]>(() => {
@@ -128,10 +127,17 @@ export default function Accounting() {
   // مجاميع ثنائية العملة
   const totalIncomeUSD    = incomeResults.reduce((s, r) => s + r.totalPaidUSD, 0);
   const totalIncomeSYP    = incomeResults.reduce((s, r) => s + r.totalPaidSYP, 0);
-  const totalTreatmentUSD = incomeResults.reduce((s, r) => s + r.totalTreatmentUSD, 0);
-  const totalTreatmentSYP = incomeResults.reduce((s, r) => s + r.totalTreatmentSYP, 0);
-  const totalRemainingUSD = totalTreatmentUSD - totalIncomeUSD;
-  const totalRemainingSYP = totalTreatmentSYP - totalIncomeSYP;
+  const discountPatients = patients.filter((patient) => !nameSearch.trim() ||
+    patient.name.includes(nameSearch.trim()) || String(patient.id).includes(nameSearch.trim()));
+  const totalDiscountUSD = discountPatients.reduce((sum, patient) => sum + (patient.payments || [])
+    .filter((payment) => payment.currency === "USD" && payment.date && matchesDate(payment.date))
+    .reduce((subtotal, payment) => subtotal + payment.discount, 0), 0);
+  const totalDiscountSYP = discountPatients.reduce((sum, patient) => sum + (patient.payments || [])
+    .filter((payment) => payment.currency === "SYP" && payment.date && matchesDate(payment.date))
+    .reduce((subtotal, payment) => subtotal + payment.discount, 0), 0);
+  const allBalances = patients.map((patient) => calculatePatientFinancials(patient.treatments, patient.payments));
+  const totalRemainingUSD = allBalances.reduce((sum, balance) => sum + Math.max(0, balance.remaining.usd), 0);
+  const totalRemainingSYP = allBalances.reduce((sum, balance) => sum + Math.max(0, balance.remaining.syp), 0);
   const totalExpensesUSD  = filteredExpenses.filter((e) => e.currency === "USD").reduce((s, e) => s + e.amount, 0);
   const totalExpensesSYP  = filteredExpenses.filter((e) => e.currency !== "USD").reduce((s, e) => s + e.amount, 0);
   const netProfitUSD      = totalIncomeUSD - totalExpensesUSD;
@@ -197,7 +203,8 @@ export default function Accounting() {
     if (!win) return;
     const incRows = incomeResults.map((r) => {
       const paidStr = [r.totalPaidUSD > 0 ? `$${r.totalPaidUSD.toLocaleString("en-US")}` : "", r.totalPaidSYP > 0 ? `${r.totalPaidSYP.toLocaleString("en-US")} ل.س` : ""].filter(Boolean).join(" + ");
-      return `<tr><td>${formatId(r.patientId)}</td><td>${r.patientName}</td><td>${r.paymentCount}</td><td style="font-weight:bold;color:#10b981">${paidStr}</td></tr>`;
+      const shamCashStr = [r.shamCashUSD > 0 ? `شام كاش $${r.shamCashUSD.toLocaleString("en-US")}` : "", r.shamCashSYP > 0 ? `شام كاش ${r.shamCashSYP.toLocaleString("en-US")} ل.س` : ""].filter(Boolean).join(" + ");
+      return `<tr><td>${formatId(r.patientId)}</td><td>${r.patientName}</td><td>${r.paymentCount}</td><td style="font-weight:bold;color:#10b981">${paidStr}${shamCashStr ? `<br><span style="color:#0f766e">${shamCashStr}</span>` : ""}</td></tr>`;
     }).join("");
     const expRows = filteredExpenses.map((e) => {
       const amtStr = e.currency === "USD" ? `$${e.amount.toLocaleString("en-US")}` : `${e.amount.toLocaleString("en-US")} ل.س`;
@@ -228,6 +235,7 @@ export default function Accounting() {
   <div class="card c-green"><p>الإيرادات</p><div class="val" style="color:#10b981;font-size:16px">$${totalIncomeUSD.toLocaleString("en-US")}</div><div class="val" style="color:#10b981;font-size:16px">${totalIncomeSYP.toLocaleString("en-US")} ل.س</div></div>
   <div class="card c-red"><p>المصاريف</p><div class="val" style="color:#ef4444;font-size:16px">$${totalExpensesUSD.toLocaleString("en-US")}</div><div class="val" style="color:#ef4444;font-size:16px">${totalExpensesSYP.toLocaleString("en-US")} ل.س</div></div>
   <div class="card c-blue"><p>صافي الربح</p><div class="val" style="color:${netProfitUSD >= 0 ? "#0ea5e9" : "#ef4444"};font-size:16px">${netProfitUSD < 0 ? "-" : ""}$${Math.abs(netProfitUSD).toLocaleString("en-US")}</div><div class="val" style="color:${netProfitSYP >= 0 ? "#0ea5e9" : "#ef4444"};font-size:16px">${netProfitSYP < 0 ? "-" : ""}${Math.abs(netProfitSYP).toLocaleString("en-US")} ل.س</div></div>
+  <div class="card c-amber"><p>إجمالي الخصومات</p><div class="val" style="color:#d97706;font-size:16px">$${totalDiscountUSD.toLocaleString("en-US")}</div><div class="val" style="color:#d97706;font-size:16px">${totalDiscountSYP.toLocaleString("en-US")} ل.س</div></div>
   <div class="card c-amber"><p>متبقي العلاجات</p><div class="val" style="color:#d97706;font-size:16px">$${totalRemainingUSD.toLocaleString("en-US")}</div><div class="val" style="color:#d97706;font-size:16px">${totalRemainingSYP.toLocaleString("en-US")} ل.س</div></div>
 </div>
 ${incomeResults.length > 0 ? `<h2>الإيرادات (${incomeResults.length} مريض)</h2>
@@ -305,11 +313,16 @@ ${filteredExpenses.length > 0 ? `<h2>المصاريف (${filteredExpenses.length
         </div>
 
         {/* بطاقات المجاميع - ثنائي العملة */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-3 mb-6">
           <div className="bg-white rounded-2xl border-2 border-emerald-100 p-4 text-center">
             <p className="text-xs font-semibold text-gray-500 mb-1">الإيرادات</p>
             <p className="text-lg font-bold text-emerald-600">${totalIncomeUSD.toLocaleString("en-US")}</p>
             <p className="text-sm font-bold text-emerald-500">{totalIncomeSYP.toLocaleString("en-US")} ل.س</p>
+          </div>
+          <div className="bg-white rounded-2xl border-2 border-amber-100 p-4 text-center">
+            <p className="text-xs font-semibold text-gray-500 mb-1">إجمالي الخصومات</p>
+            <p className="text-lg font-bold text-amber-700">${totalDiscountUSD.toLocaleString("en-US")}</p>
+            <p className="text-sm font-bold text-amber-600">{totalDiscountSYP.toLocaleString("en-US")} ل.س</p>
           </div>
           <div className="bg-white rounded-2xl border-2 border-red-100 p-4 text-center">
             <p className="text-xs font-semibold text-gray-500 mb-1">المصاريف</p>
@@ -325,11 +338,12 @@ ${filteredExpenses.length > 0 ? `<h2>المصاريف (${filteredExpenses.length
               {netProfitSYP<0&&<span className="text-sm">-</span>}{Math.abs(netProfitSYP).toLocaleString("en-US")} ل.س
             </p>
           </div>
-          <div className="bg-white rounded-2xl border-2 border-amber-100 p-4 text-center">
+          <button type="button" onClick={() => navigate("/accounting/remaining")}
+            className="bg-white rounded-2xl border-2 border-amber-100 p-4 text-center hover:border-amber-300 transition-colors">
             <p className="text-xs font-semibold text-gray-500 mb-1">متبقي العلاجات</p>
             <p className="text-lg font-bold text-amber-600">${totalRemainingUSD.toLocaleString("en-US")}</p>
             <p className="text-sm font-bold text-amber-500">{totalRemainingSYP.toLocaleString("en-US")} ل.س</p>
-          </div>
+          </button>
         </div>
 
         {/* التبويبات */}
@@ -395,6 +409,8 @@ ${filteredExpenses.length > 0 ? `<h2>المصاريف (${filteredExpenses.length
                       <div className="text-left flex-shrink-0">
                         {r.totalPaidUSD > 0 && <p className="text-sm font-bold text-emerald-600">${r.totalPaidUSD.toLocaleString("en-US")}</p>}
                         {r.totalPaidSYP > 0 && <p className="text-sm font-bold text-emerald-500">{r.totalPaidSYP.toLocaleString("en-US")} ل.س</p>}
+                        {r.shamCashUSD > 0 && <p className="text-xs font-semibold text-teal-700">شام كاش ${r.shamCashUSD.toLocaleString("en-US")}</p>}
+                        {r.shamCashSYP > 0 && <p className="text-xs font-semibold text-teal-700">شام كاش {r.shamCashSYP.toLocaleString("en-US")} ل.س</p>}
                         <p className="text-xs text-gray-400">مجموع المدفوع</p>
                       </div>
                       <svg className="w-4 h-4 text-gray-300 flex-shrink-0 rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">

@@ -6,7 +6,7 @@ import Navbar from "../components/Navbar";
 import { ToastContainer } from "../components/Toast";
 import {
   getAllPatients, getAllExpenses, getAllAppointments,
-  parseAmount, formatId, formatDateAr, todayISO,
+  formatId, formatDateAr, todayISO,
   Appointment, Expense, Patient,
 } from "../lib/db";
 
@@ -171,14 +171,10 @@ export default function Statistics() {
   const monthlyIncomeSYP = useMemo(() => {
     const arr = Array(12).fill(0);
     for (const patient of patients) {
-      for (const row of patient.treatments) {
-        if (!row.date || !row.paidAmount || row.currency === "USD") continue;
-        const paid = parseAmount(row.paidAmount);
-        if (paid === 0) continue;
-        const parts = row.date.split("/");
-        if (parts.length !== 3) continue;
-        const [, m, y] = parts.map(Number);
-        if (y === year) arr[m - 1] += paid;
+      for (const payment of patient.payments || []) {
+        if (!payment.date || payment.currency === "USD" || payment.amount <= 0) continue;
+        const [y, m] = payment.date.split("-").map(Number);
+        if (y === year && m >= 1 && m <= 12) arr[m - 1] += payment.amount;
       }
     }
     return arr;
@@ -187,14 +183,10 @@ export default function Statistics() {
   const monthlyIncomeUSD = useMemo(() => {
     const arr = Array(12).fill(0);
     for (const patient of patients) {
-      for (const row of patient.treatments) {
-        if (!row.date || !row.paidAmount || row.currency !== "USD") continue;
-        const paid = parseAmount(row.paidAmount);
-        if (paid === 0) continue;
-        const parts = row.date.split("/");
-        if (parts.length !== 3) continue;
-        const [, m, y] = parts.map(Number);
-        if (y === year) arr[m - 1] += paid;
+      for (const payment of patient.payments || []) {
+        if (!payment.date || payment.currency !== "USD" || payment.amount <= 0) continue;
+        const [y, m] = payment.date.split("-").map(Number);
+        if (y === year && m >= 1 && m <= 12) arr[m - 1] += payment.amount;
       }
     }
     return arr;

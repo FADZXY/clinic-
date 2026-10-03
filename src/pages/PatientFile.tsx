@@ -6,6 +6,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import {
   getPatientById,
   updatePatient,
+  calculatePatientFinancials,
+  PaymentTransaction,
   TreatmentRow,
   Patient,
   createEmptyTreatmentRows,
@@ -13,6 +15,7 @@ import {
   formatAmount,
   parseAmount,
   todayFormatted,
+  todayISO,
 } from "../lib/db";
 import FieldGroup from "../components/FieldGroup";
 import { ToastContainer, showToast } from "../components/Toast";
@@ -44,6 +47,15 @@ export default function PatientFile({ patientId }: PatientFileProps) {
   const [allergies,       setAllergies]       = useState("");
   const [notes,           setNotes]           = useState("");
   const [treatments,      setTreatments]      = useState<TreatmentRow[]>([]);
+  const [payments,        setPayments]        = useState<PaymentTransaction[]>([]);
+  const [showPaymentForm, setShowPaymentForm] = useState(false);
+  const [paymentAmount,   setPaymentAmount]   = useState("");
+  const [paymentDiscount, setPaymentDiscount] = useState("");
+  const [paymentCurrency, setPaymentCurrency] = useState<"USD" | "SYP">("SYP");
+  const [paymentMethod, setPaymentMethod] = useState<"direct" | "sham_cash">("direct");
+  const [paymentDate,     setPaymentDate]     = useState(todayISO());
+  const [paymentSaving,   setPaymentSaving]   = useState(false);
+  const [updatingPaymentId, setUpdatingPaymentId] = useState<string | null>(null);
   const [toothNotes,      setToothNotes]      = useState<Record<string, string>>({});
 
   // تحميل بيانات المريض
@@ -61,6 +73,7 @@ export default function PatientFile({ patientId }: PatientFileProps) {
       setChronicDiseases(p.chronicDiseases || "");
       setAllergies(p.allergies || "");
       setNotes(p.notes || "");
+      setPayments(p.payments || []);
       setToothNotes(p.toothNotes || {});
       setActivePatient({ id: p.id, name: p.name });
       const rows = [...(p.treatments || [])];
@@ -166,27 +179,67 @@ export default function PatientFile({ patientId }: PatientFileProps) {
     triggerAutoSave(undefined, newNotes);
   }
 
+  async function handlePaymentSave() {
+    if (!patient) return;
+    const amount = parseAmount(paymentAmount);
+    const discount = parseAmount(paymentDiscount);
+    if (amount < 0 || discount < 0 || (amount === 0 && discount === 0)) {
+      showToast("أدخل مبلغ دفعة أو خصماً صحيحاً", "error");
+      return;
+    }
+    if (!paymentDate) {
+      showToast("أدخل تاريخ المعاملة", "error");
+      return;
+    }
+
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    setPaymentSaving(true);
+    const transaction: PaymentTransaction = {
+      id: crypto.randomUUID(), amount, discount, currency: paymentCurrency,
+      date: paymentDate, method: paymentMethod,
+    };
+    const updatedPayments = [...payments, transaction];
+    const updatedPatient: Patient = {
+      ...patient, name, gender, birthDate, phone, address, email,
+      chronicDiseases, allergies, notes, treatments, toothNotes,
+      payments: updatedPayments,
+    };
+    await updatePatient(updatedPatient);
+    setPatient(updatedPatient);
+    setPayments(updatedPayments);
+    setPaymentAmount("");
+    setPaymentDiscount("");
+    setPaymentMethod("direct");
+    setPaymentDate(todayISO());
+    setShowPaymentForm(false);
+    setPaymentSaving(false);
+    showToast("تم حفظ المعاملة بنجاح", "success");
+  }
+
+  async function handlePaymentMethodChange(transaction: PaymentTransaction, method: "direct" | "sham_cash") {
+    if (!patient || updatingPaymentId) return;
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    setUpdatingPaymentId(transaction.id);
+    const updatedPayments = payments.map((payment) => payment.id === transaction.id
+      ? { ...payment, method }
+      : payment);
+    const updatedPatient: Patient = { ...patient, payments: updatedPayments };
+    await updatePatient(updatedPatient);
+    setPatient(updatedPatient);
+    setPayments(updatedPayments);
+    setUpdatingPaymentId(null);
+    showToast(method === "sham_cash" ? "تم تسجيل الدفعة كشام كاش" : "تم تسجيل الدفعة نقداً");
+  }
+
   // استخراج أرقام الأسنان المُعالَجة من جدول العلاجات
   const treatedTeeth = treatments
     .map((r) => r.toothNumber.trim())
     .filter((n) => n !== "");
 
-  // حساب المجاميع - كل عملة على حدة
-  function accumulateByCurrency(rows: TreatmentRow[], field: "treatmentAmount" | "paidAmount") {
-    let usd = 0, syp = 0;
-    for (const r of rows) {
-      const val = parseAmount(r[field]);
-      if (val === 0) continue;
-      if (r.currency === "USD") usd += val;
-      else syp += val;
-    }
-    return { usd, syp };
-  }
-
-  const totalTreatment = accumulateByCurrency(treatments, "treatmentAmount");
-  const totalPaid      = accumulateByCurrency(treatments, "paidAmount");
-  const totalRemainingUSD = totalTreatment.usd - totalPaid.usd;
-  const totalRemainingSYP = totalTreatment.syp - totalPaid.syp;
+  const financials = calculatePatientFinancials(treatments, payments);
+  const { treatment: totalTreatment, paid: totalPaid, discount: totalDiscount } = financials;
+  const totalRemainingUSD = financials.remaining.usd;
+  const totalRemainingSYP = financials.remaining.syp;
 
   function handlePrintPDF() { window.print(); }
 
@@ -360,19 +413,17 @@ export default function PatientFile({ patientId }: PatientFileProps) {
         {/* ===== جدول العلاجات ===== */}
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden mb-4">
           <div className="bg-sky-50 border-b border-sky-100 px-4 py-3">
-            <h3 className="font-bold text-sky-700 text-sm">جدول العلاجات والمدفوعات</h3>
+            <h3 className="font-bold text-sky-700 text-sm">جدول العلاجات</h3>
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full treatment-table text-sm" style={{ minWidth: "650px" }}>
+            <table className="w-full treatment-table text-sm" style={{ minWidth: "520px" }}>
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-100">
                   <th className="px-3 py-2.5 text-right font-bold text-gray-600 text-xs w-16">رقم السن</th>
                   <th className="px-3 py-2.5 text-right font-bold text-gray-600 text-xs">التشخيص والعلاج</th>
                   <th className="px-3 py-2.5 text-right font-bold text-gray-600 text-xs w-16">العملة</th>
                   <th className="px-3 py-2.5 text-right font-bold text-gray-600 text-xs w-28">مبلغ العلاج</th>
-                  <th className="px-3 py-2.5 text-right font-bold text-gray-600 text-xs w-28">المدفوع</th>
-                  <th className="px-3 py-2.5 text-right font-bold text-gray-600 text-xs w-28">المتبقي</th>
                   <th className="px-3 py-2.5 text-right font-bold text-gray-600 text-xs w-28">التاريخ</th>
                 </tr>
               </thead>
@@ -417,20 +468,6 @@ export default function PatientFile({ patientId }: PatientFileProps) {
                         className="w-full px-2 py-1.5 rounded-lg border border-transparent hover:border-gray-200 focus:border-sky-300 focus:bg-white text-sm text-center"
                         placeholder="0" data-testid={`input-treatment-amount-${index}`} />
                     </td>
-                    {/* المدفوع */}
-                    <td className="px-1 py-1">
-                      <input type="text" inputMode="numeric" value={row.paidAmount}
-                        onChange={(e) => updateTreatmentRow(index, "paidAmount", e.target.value)}
-                        onBlur={() => handleAmountBlur(index, "paidAmount")}
-                        className="w-full px-2 py-1.5 rounded-lg border border-transparent hover:border-gray-200 focus:border-sky-300 focus:bg-white text-sm text-center"
-                        placeholder="0" data-testid={`input-paid-amount-${index}`} />
-                    </td>
-                    {/* المتبقي - للقراءة فقط */}
-                    <td className="px-1 py-1">
-                      <input type="text" value={row.remainingAmount} readOnly
-                        className="w-full px-2 py-1.5 rounded-lg bg-amber-50 text-amber-700 font-medium text-sm text-center cursor-default"
-                        placeholder="0" data-testid={`input-remaining-${index}`} />
-                    </td>
                     {/* التاريخ */}
                     <td className="px-1 py-1">
                       <input type="text" value={row.date}
@@ -446,9 +483,90 @@ export default function PatientFile({ patientId }: PatientFileProps) {
           </div>
         </div>
 
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden mb-4">
+          <div className="flex items-center justify-between gap-3 bg-emerald-50 border-b border-emerald-100 px-4 py-3">
+            <h3 className="font-bold text-emerald-700 text-sm">سجل الدفعات</h3>
+            <button onClick={() => setShowPaymentForm((shown) => !shown)}
+              className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold">
+              {showPaymentForm ? "إلغاء" : "تسجيل دفعة / خصم"}
+            </button>
+          </div>
+
+          {showPaymentForm && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-4 border-b border-gray-100">
+              <label className="text-xs font-semibold text-gray-600">المبلغ المقبوض
+                <input type="number" min="0" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)}
+                  className="w-full mt-1 px-3 py-2 rounded-lg border border-gray-200 text-sm" placeholder="0" />
+              </label>
+              <label className="text-xs font-semibold text-gray-600">الخصم
+                <input type="number" min="0" value={paymentDiscount} onChange={(e) => setPaymentDiscount(e.target.value)}
+                  className="w-full mt-1 px-3 py-2 rounded-lg border border-gray-200 text-sm" placeholder="0" />
+              </label>
+              <label className="text-xs font-semibold text-gray-600">العملة
+                <select value={paymentCurrency} onChange={(e) => setPaymentCurrency(e.target.value as "USD" | "SYP")}
+                  className="w-full mt-1 px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm">
+                  <option value="SYP">ل.س</option><option value="USD">$</option>
+                </select>
+              </label>
+              <label className="text-xs font-semibold text-gray-600">وسيلة الدفع
+                <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value as "direct" | "sham_cash")}
+                  className="w-full mt-1 px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm">
+                  <option value="direct">نقداً</option><option value="sham_cash">شام كاش</option>
+                </select>
+              </label>
+              <label className="text-xs font-semibold text-gray-600">التاريخ
+                <input type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)}
+                  className="w-full mt-1 px-3 py-2 rounded-lg border border-gray-200 text-sm" />
+              </label>
+              <button onClick={handlePaymentSave} disabled={paymentSaving}
+                className="self-end px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-sm font-semibold">
+                {paymentSaving ? "جاري الحفظ..." : "حفظ المعاملة"}
+              </button>
+            </div>
+          )}
+
+          {payments.length === 0 ? (
+            <p className="px-4 py-6 text-center text-sm text-gray-400">لا توجد معاملات مسجلة</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm" style={{ minWidth: "560px" }}>
+                <thead><tr className="bg-gray-50 text-right text-xs text-gray-600">
+                  <th className="px-4 py-2.5">التاريخ</th><th className="px-4 py-2.5">المدفوع</th>
+                  <th className="px-4 py-2.5">الخصم</th><th className="px-4 py-2.5">وسيلة الدفع</th>
+                </tr></thead>
+                <tbody>{payments.map((transaction) => (
+                  <tr key={transaction.id} className="border-t border-gray-100">
+                    <td className="px-4 py-2.5">{transaction.date || "تاريخ غير مسجل"}</td>
+                    <td className="px-4 py-2.5 font-semibold text-emerald-700">
+                      {transaction.amount.toLocaleString("en-US")} {transaction.currency === "USD" ? "$" : "ل.س"}
+                    </td>
+                    <td className="px-4 py-2.5 font-semibold text-amber-700">
+                      {transaction.discount.toLocaleString("en-US")} {transaction.currency === "USD" ? "$" : "ل.س"}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <select value={transaction.method}
+                        disabled={updatingPaymentId !== null}
+                        onChange={(event) => {
+                          if (event.target.value !== "unknown") {
+                            handlePaymentMethodChange(transaction, event.target.value as "direct" | "sham_cash");
+                          }
+                        }}
+                        aria-label={`وسيلة الدفع للدفعة ${transaction.amount}`}
+                        className="min-w-28 px-2 py-1.5 rounded-lg border border-gray-200 bg-white text-xs font-semibold text-teal-700 focus:border-teal-400 focus:outline-none">
+                        <option value="direct">نقداً</option><option value="sham_cash">شام كاش</option>
+                        {transaction.method === "unknown" && <option value="unknown">غير محدد</option>}
+                      </select>
+                    </td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
         {/* ===== مجاميع المدفوعات (ثنائي العملة) ===== */}
         <div className="space-y-3 mb-6">
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <div className="bg-white rounded-2xl border-2 border-sky-100 p-4 text-center">
               <p className="text-xs font-semibold text-gray-500 mb-1">إجمالي العلاجات</p>
               <p className="text-xl font-bold text-sky-700">
@@ -468,6 +586,17 @@ export default function PatientFile({ patientId }: PatientFileProps) {
               </p>
               <p className="text-lg font-bold text-emerald-500">
                 {totalPaid.syp.toLocaleString("en-US")}
+                <span className="text-xs font-normal text-gray-400 mr-1">ل.س</span>
+              </p>
+            </div>
+            <div className="bg-white rounded-2xl border-2 border-amber-100 p-4 text-center">
+              <p className="text-xs font-semibold text-gray-500 mb-1">إجمالي الخصومات</p>
+              <p className="text-xl font-bold text-amber-700">
+                {totalDiscount.usd.toLocaleString("en-US")}
+                <span className="text-xs font-normal text-gray-400 mr-1">$</span>
+              </p>
+              <p className="text-lg font-bold text-amber-600">
+                {totalDiscount.syp.toLocaleString("en-US")}
                 <span className="text-xs font-normal text-gray-400 mr-1">ل.س</span>
               </p>
             </div>

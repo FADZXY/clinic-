@@ -14,6 +14,7 @@ import Appointments from "@/pages/Appointments";
 import Statistics   from "@/pages/Statistics";
 import Admin        from "@/pages/Admin";
 import PatientFile  from "@/pages/PatientFile";
+import OutstandingBalances from "@/pages/OutstandingBalances";
 
 const queryClient = new QueryClient();
 
@@ -64,6 +65,10 @@ function Router() {
 
       <Route path="/accounting">
         {() => !isLoggedIn() ? <Redirect to="/" /> : <Accounting />}
+      </Route>
+
+      <Route path="/accounting/remaining">
+        {() => !isLoggedIn() ? <Redirect to="/" /> : <OutstandingBalances />}
       </Route>
 
       <Route path="/statistics">

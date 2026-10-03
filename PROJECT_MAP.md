@@ -1,14 +1,24 @@
 # Dental Clinic Management System - Project Map
 
-## Tech Stack
+## [TECH_STACK]
 - **Frontend**: React 19 + TypeScript + Vite
 - **Styling**: Tailwind CSS 4 + shadcn/ui
 - **Routing**: wouter
 - **State**: React Query + React Context (ClinicContext)
 - **Storage**: IndexedDB (local, offline-first)
 - **Data Format**: JSON export/import
+- **Financial model**: Treatment rows plus patient-level payment transactions in IndexedDB
 
-## Architecture
+## [SYSTEM_FLOW]
+- PatientFile stores treatment charges separately from payment transactions.
+- Each transaction records received amount, discount, currency, date, and method (`direct`, `sham_cash`, or legacy `unknown`); PatientFile exposes a per-transaction payment-method selector.
+- Income and monthly statistics sum received amounts only; discounts reduce outstanding balances but are not income.
+- Logging uses asynchronous `info`/`warn`/`error` console delivery and excludes patient data.
+- Outstanding balance per currency = treatment charges - received amounts - discounts. The outstanding page lists patients with a positive balance in either currency.
+- Accounting's outstanding card opens the protected `/accounting/remaining` route; selecting a patient opens their file in a new tab.
+- Legacy treatment `paidAmount` values migrate once to transactions with method `unknown`; old backups are normalized during import.
+
+## [ARCHITECTURE]
 
 ### Pages (`/src/pages/`)
 | Page | Route | Purpose |
@@ -18,6 +28,7 @@
 | PatientFile | `/patient/:id` | Patient profile, treatments, tooth diagram |
 | Appointments | `/appointments` | Appointment management |
 | Accounting | `/accounting` | Income/expenses with dual-currency (USD/SYP) |
+| OutstandingBalances | `/accounting/remaining` | Patients with open treatment balances |
 | Statistics | `/statistics` | Charts, activity log |
 | Admin | `/admin` | Backup/restore, password change |
 
@@ -36,9 +47,10 @@
 | Toast | Notification system |
 
 ### Data Layer (`/src/lib/db.ts`)
-- **IndexedDB**: `medicalDB` (v4)
+- **IndexedDB**: `medicalDB` (v3)
 - **Stores**: patients, deletedIds, appointments, expenses
-- **Data Format Version**: 2 (with migration from v1)
+- **Data Format Version**: 3 (FDI migration v2, payment transaction migration v3)
+- **Patient payments**: embedded transaction list, included in the existing JSON export/import
 
 ### Context (`/src/lib/clinic-context.tsx`)
 - Active patient tracking (for appointment auto-fill)
@@ -80,10 +92,15 @@
 ### Patient
 - `id`, `name`, `gender`, `birthDate`, `phone`, `address`, `email`
 - `chronicDiseases`, `allergies`, `notes`
-- `createdAt`, `treatments[]`, `toothNotes{}`, `dataFormatVersion?`
+- `createdAt`, `treatments[]`, `payments[]`, `toothNotes{}`, `dataFormatVersion?`
 
 ### TreatmentRow
-- `toothNumber`, `diagnosis`, `treatmentAmount`, `paidAmount`, `remainingAmount`, `date`, `currency?`
+- `toothNumber`, `diagnosis`, `treatmentAmount`, `date`, `currency?`
+- Historical `paidAmount`/`remainingAmount` fields are retained only to migrate older records.
+
+### PaymentTransaction
+- `id`, `amount`, `discount`, `currency`, `date`, `method`
+- `method`: `direct`, `sham_cash`, or `unknown` for legacy records
 
 ### Appointment
 - `id?`, `patientId`, `patientName`, `date`, `time`, `notes`, `status`, `createdAt`
@@ -103,4 +120,12 @@
 - v1: Initial - patients + deletedIds
 - v2: Added appointments store
 - v3: Added expenses store
-- v4: Added `dataFormatVersion` field support + FDI migration
+- IndexedDB schema is currently v3; format version is tracked separately.
+- Data format v2: FDI tooth-number migration.
+- Data format v3: legacy treatment payments migrated to patient transactions.
+
+## [ORPHANS & PENDING]
+- `Navbar` currently renders nested anchors through its route-link composition; this predates the payment changes and remains outside scope.
+- Legacy transactions without a valid treatment date retain an empty date and are excluded from date-filtered income/statistics; their amounts still affect balances.
+- Legacy payment method remains unknown because historical records did not store it.
+- No remote logging or persistent activity log is added for payment transactions.
